@@ -3,15 +3,17 @@ from playwright.async_api import async_playwright
 from dotenv import load_dotenv
 import streamlit as st
 import os
+import pandas as pd
+import requests
 
 # Load .env file
 load_dotenv()
 
 USERNAME = os.getenv("USERNAME")
 PASSWORD = os.getenv("PASSWORD")
+MODEL_ACCESS_KEY = os.getenv("MODEL_ACCESS_KEY")
 
-
-async def sfpl_login_final_attempt():
+async def sfpl_2025():
     async with async_playwright() as pw:
         browser = await pw.chromium.launch(headless=False)
         page = await browser.new_page()
@@ -188,10 +190,34 @@ async def sfpl_login_final_attempt():
                 break
 
         print(f"Collected {len(books_2025)} books from 2025:")
-        for b in books_2025:
-            print(f"- {b['title']} — {b['author']}")
-        
+        # Convert to DataFrame for downstream use
+        df = pd.DataFrame(books_2025)[["title", "author"]]
+        print('df ', df)
+
+
+        url = "https://inference.do-ai.run/v1/chat/completions"
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {MODEL_ACCESS_KEY}"
+        }
+        messages = [{"role": "system", "content": "You are an expert librarian advocate who loves books and economics. Output only what is asked of you, do not reason. Just have fun and advocate for libraries and tell people how much money they saved this year based on how many books they checked out from the library."},
+            {"role": "user", "content": (
+            "Generate a brief 2025 year-end wrap-up for the user based on their SF Public Library data. Tell them how many books they checked out, some highlights, and estimate how much money they saved by going to the library. Estimate 1 book costs $23. "
+            "Use the exact numeric stats provided (do not make up numbers, books, or authors). "
+            "Write in a funny, friendly, engaging tone.\n\n"
+            f"Library books checked out this year {df}"
+        )}]
+        payload = {"model": "openai-gpt-oss-20b", "messages": messages, "temperature": 0.2, "max_tokens": 500}
+
+        response = requests.post(url, headers=headers, json=payload)
+        try:
+            data = response.json()
+            print('data', data)
+            content = (data.get("choices", [{}])[0].get("message", {}) or {}).get("content", "")
+            print('content', content)
+        except Exception as e:
+            print(f"Error parsing response: {e}\nRaw: {response.text[:1000]}")
         
        
 if __name__ == "__main__":
-    asyncio.run(sfpl_login_final_attempt())
+    asyncio.run(sfpl_2025())
