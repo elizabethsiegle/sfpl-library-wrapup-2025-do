@@ -1,11 +1,13 @@
 import asyncio
 from playwright.async_api import async_playwright
 from dotenv import load_dotenv
+import json
 import os
 import pandas as pd
 import requests
 
 from library_goodreads_helpers import clean_books_df, compute_book_stats
+from strava_helpers import clean_workouts_df, compute_workout_stats
 
 # Load .env file
 load_dotenv()
@@ -23,6 +25,7 @@ def _normalize_title(s: str) -> str:
     - removes punctuation
     - collapses multiple spaces
     """
+    # Short and robust: strip noise so titles align across sources
     if not isinstance(s, str):
         s = str(s or "")
     t = s.strip().lower()
@@ -223,13 +226,23 @@ async def sfpl_2025():
 
         response = requests.post(url, headers=headers, json=payload)
         
-        # get Goodreads data from csv
+        # Get Goodreads data from csv
+        # Note: we clean and then filter to just the 2025 'read' shelf
         gr_path = os.path.expanduser('~/Desktop/demos/goodreads-and-strava-wrapup/data_csvs/goodreads_library_export.csv')
         print('Reading Goodreads CSV from', gr_path)
         goodreads_data = pd.read_csv(gr_path)
         goodreads_books_clean = clean_books_df(goodreads_data)
         print('books_clean', goodreads_books_clean)
-        # Filter for 2025 reads even if columns vary/missing
+
+        # Get Strava data from csv
+        strava_path = os.path.expanduser('~/Desktop/demos/goodreads-and-strava-wrapup/data_csvs/activities.csv')
+        print('Reading Strava CSV from', strava_path)
+        strava_data = pd.read_csv(strava_path)
+        strava_workouts_clean = clean_workouts_df(strava_data)
+        print('strava_workouts_clean', strava_workouts_clean)
+        
+        
+        # Filter Goodreads to 2025 reads; be tolerant of missing columns
         if isinstance(goodreads_books_clean, pd.DataFrame) and len(goodreads_books_clean):
             date_col = 'Date Read' if 'Date Read' in goodreads_books_clean.columns else None
             shelf_col = 'Exclusive Shelf' if 'Exclusive Shelf' in goodreads_books_clean.columns else None
@@ -251,27 +264,44 @@ async def sfpl_2025():
         print('goodreads_books_this_year', goodreads_books_this_year)
         print('goodreads_book_stats ', goodreads_book_stats)
 
+        # Strava: tidy then filter to 2025 workouts for stats
+        tidy_strava = clean_workouts_df(strava_data)
+        workouts_this_year = (
+            tidy_strava[tidy_strava['Activity Date'].dt.year == 2025].copy()
+        )
+        print('workouts_this_year', workouts_this_year)
+        workout_stats = compute_workout_stats(workouts_this_year)
+        print('workout_stats', workout_stats)
+       
+           
+
+        # Serialize workout stats for quick embedding/transport
+        stats_json = json.dumps({**workout_stats})
+        print('stats_json', stats_json)
+
         # Merge Goodreads ratings into the library DataFrame by matching titles
         try:
             print('Attempting Goodreads ratings merge…')
             if not goodreads_books_this_year.empty and 'Title' in goodreads_books_this_year.columns:
                 gr = goodreads_books_this_year[['Title', 'My Rating']].copy()
+                # Normalize titles and try exact key match first
                 gr['__key'] = gr['Title'].map(_normalize_title)
                 lib_df['__key'] = lib_df['title'].map(_normalize_title)
                 rating_map = gr.set_index('__key')['My Rating']
                 lib_df['rating'] = lib_df['__key'].map(rating_map)
-                # Fallback: fuzzy match for remaining NaNs
+
+                # Quick fuzzy fallback for remaining NaNs (helps near-matches)
                 try:
                     import difflib
-                    gr_keys = set(gr['__key'].dropna().unique())
+                    gr_keys = list(gr['__key'].dropna().unique())
+
                     def _fuzzy_lookup(k: str):
+                        # Return closest Goodreads key if similarity is high
                         if not isinstance(k, str) or not k:
                             return None
-                        # Find the closest normalized title from Goodreads
-                        match = difflib.get_close_matches(k, gr_keys, n=1, cutoff=0.88)
-                        if match:
-                            return rating_map.get(match[0])
-                        return None
+                        match = difflib.get_close_matches(k, gr_keys, n=1, cutoff=0.9)
+                        return rating_map.get(match[0]) if match else None
+
                     na_mask = lib_df['rating'].isna()
                     if na_mask.any():
                         lib_df.loc[na_mask, 'rating'] = lib_df.loc[na_mask, '__key'].map(_fuzzy_lookup)
@@ -300,24 +330,35 @@ async def sfpl_2025():
             data = response.json()
             library_money_saved_llm_content = (data.get("choices", [{}])[0].get("message", {}) or {}).get("content", "")
             print('content', library_money_saved_llm_content)
-            return lib_df, library_money_saved_llm_content, goodreads_book_stats, goodreads_books_this_year
+            # Return all artifacts in-memory, including Strava and detailed workouts
+            return (
+                lib_df,
+                library_money_saved_llm_content,
+                goodreads_book_stats,
+                goodreads_books_this_year,
+                workout_stats,
+                stats_json,
+                workouts_this_year,
+            )
         except Exception as e:
             print(f"Error parsing response: {e}\nRaw: {response.text[:1000]}")
-            return lib_df, ""
+            return (
+                lib_df,
+                "",
+                goodreads_book_stats,
+                goodreads_books_this_year,
+                workout_stats,
+                stats_json,
+                workouts_this_year,
+            )
         
         
        
 if __name__ == "__main__":
     # Run and capture all artifacts
     result = asyncio.run(sfpl_2025())
-    try:
-        lib_df, content, goodreads_book_stats, goodreads_books_this_year = result
-    except Exception:
-        # Backward compatibility in case function signature differs
-        lib_df = result[0] if isinstance(result, (list, tuple)) and len(result) > 0 else pd.DataFrame()
-        content = result[1] if isinstance(result, (list, tuple)) and len(result) > 1 else ""
-        goodreads_book_stats = result[2] if isinstance(result, (list, tuple)) and len(result) > 2 else {}
-        goodreads_books_this_year = result[3] if isinstance(result, (list, tuple)) and len(result) > 3 else pd.DataFrame()
+    lib_df, content, goodreads_book_stats, goodreads_books_this_year, workout_stats, stats_json, workouts_this_year = result
+   
 
     # Save artifacts
     try:
@@ -339,5 +380,12 @@ if __name__ == "__main__":
         if isinstance(content, str):
             with open("wrapup_2025.txt", "w") as f:
                 f.write(content)
+        # Save Strava stats JSON for optional offline use
+        try:
+            if isinstance(stats_json, str) and stats_json:
+                with open("strava_workout_stats_2025.json", "w") as f:
+                    f.write(stats_json)
+        except Exception:
+            pass
     except Exception:
         pass
