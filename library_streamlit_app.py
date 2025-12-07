@@ -35,7 +35,7 @@ load_dotenv()
 st.set_page_config(page_title=PAGE_TITLE, page_icon=PAGE_ICON, layout=LAYOUT)
 
 # --- HELPER FUNCTIONS: DATA PROCESSING ---
-
+@st.cache_data(show_spinner="Running scraping and LLM pipeline... this is the slow part! (Only runs once per session.)")
 def fetch_data():
     """Fetches data and populates session state."""
     lib_df, wrapup_text, gr_stats_obj, gr_books_df, workout_stats, stats_json = get_library_and_goodreads()
