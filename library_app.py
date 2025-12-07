@@ -7,7 +7,7 @@ import pandas as pd
 import requests
 
 from library_goodreads_helpers import clean_books_df, compute_book_stats
-from strava_helpers import clean_workouts_df, compute_workout_stats
+from strava_helpers import clean_workouts_df, compute_workout_stats, compute_activities_per_month_by_type
 
 # Load .env file
 load_dotenv()
@@ -271,6 +271,12 @@ async def sfpl_2025():
         )
         print('workouts_this_year', workouts_this_year)
         workout_stats = compute_workout_stats(workouts_this_year)
+        # Add simple monthly breakdown for Streamlit dual-axis chart
+        try:
+            by_month_series = workouts_this_year['Activity Date'].dt.month.value_counts().sort_index()
+            workout_stats['by_month'] = {int(k): int(v) for k, v in by_month_series.to_dict().items()}
+        except Exception:
+            workout_stats['by_month'] = {}
         print('workout_stats', workout_stats)
        
            

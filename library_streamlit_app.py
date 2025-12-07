@@ -22,7 +22,7 @@ st.caption("Fetches data in-memory; no CSVs required.")
 # One button loads everything and caches it in session_state
 # Returned objects: lib_df, wrapup_text, gr_stats_obj, gr_books_df, workout_stats, stats_json
 st.subheader("Data")
-if st.button("Fetch latest library + Goodreads data"):
+if st.button("See Lizzie's 2025 library, Goodreads, and Strava data"):
 	# Fetch all artifacts in-memory via library_app.sfpl_2025
 	lib_df, wrapup_text, gr_stats_obj, gr_books_df, workout_stats, stats_json = get_library_and_goodreads()
 	st.session_state["lib_df"] = lib_df
@@ -45,13 +45,61 @@ if isinstance(lib_df, pd.DataFrame) and not lib_df.empty:
 	st.dataframe(lib_df)
 
 	st.subheader("Goodreads: Summary Stats")
-	gr_stats_obj = st.session_state.get("gr_stats_obj")
-	if gr_stats_obj is not None:
+	# Prefer computing tidy summary from the 2025 Goodreads books to avoid duplicates
+	gr_books_df_for_stats = st.session_state.get("gr_books_df", pd.DataFrame())
+	if isinstance(gr_books_df_for_stats, pd.DataFrame) and not gr_books_df_for_stats.empty:
 		try:
-			gr_stats_df = pd.DataFrame(gr_stats_obj)
-			st.dataframe(gr_stats_df)
-		except Exception:
-			pass
+			df = gr_books_df_for_stats.copy()
+			# Only 2025 reads
+			df["_date"] = pd.to_datetime(df.get("Date Read", pd.Series([])), errors="coerce")
+			df = df.dropna(subset=["_date"]) 
+			df = df[df["_date"].dt.year == 2025]
+			# Normalize columns that vary in casing
+			title_col = "Title" if "Title" in df.columns else None
+			author_col = "Author" if "Author" in df.columns else ("author" if "author" in df.columns else None)
+			rating_col = "My Rating" if "My Rating" in df.columns else None
+			# Deduplicate by title to avoid repeats and compute simple aggregates
+			if title_col:
+				df = df.drop_duplicates(subset=[title_col])
+			total_books = int(len(df))
+			avg_rating = float(pd.to_numeric(df[rating_col], errors="coerce").mean()) if rating_col else 0.0
+			top_authors = (
+				df[author_col].value_counts().head(5).to_dict() if author_col else {}
+			)
+			monthly_counts = (
+				df.assign(month=df["_date"].dt.month)
+				.groupby("month", as_index=False)
+				.size()
+				.rename(columns={"size": "books"})
+			)
+			summary = {
+				"total_books_2025": total_books,
+				"avg_rating": round(avg_rating, 2) if avg_rating else None,
+				"top_authors_5": top_authors,
+			}
+			st.json(summary)
+			# Small monthly chart for quick glance with axis titles
+			if not monthly_counts.empty:
+				import altair as alt
+				mc_chart = (
+					alt.Chart(monthly_counts)
+					.mark_bar(color="#1E88E5")
+					.encode(
+						x=alt.X("month:O", title="Month"),
+						y=alt.Y("books:Q", title="Books Read")
+					)
+				)
+				st.altair_chart(mc_chart, width='stretch')
+		except Exception as e:
+			st.warning(f"Could not compute Goodreads summary: {e}")
+	else:
+		# Fallback to whatever object was returned, if present
+		gr_stats_obj = st.session_state.get("gr_stats_obj")
+		if gr_stats_obj is not None:
+			try:
+				st.dataframe(pd.DataFrame(gr_stats_obj))
+			except Exception:
+				pass
 
 	# Charts: read vs not read ratio based on rating == 'NR'
 	# Simple indicator of how many checkouts were actually finished
@@ -62,8 +110,17 @@ if isinstance(lib_df, pd.DataFrame) and not lib_df.empty:
 			"status": ["Read", "Not Read"],
 			"count": [int(read_mask.sum()), int((~read_mask).sum())]
 		})
-		# Minimal bar chart; could switch to Altair for labels/colors
-		st.bar_chart(counts.set_index("status"))
+		# Altair bar chart with axis titles
+		import altair as alt
+		read_chart = (
+			alt.Chart(counts)
+			.mark_bar(color="#4C78A8")
+			.encode(
+				x=alt.X("status:N", title="Status"),
+				y=alt.Y("count:Q", title="Count")
+			)
+		)
+		st.altair_chart(read_chart, use_container_width=True)
 		st.caption(f"Read: {int(read_mask.sum())} • Not Read: {int((~read_mask).sum())}")
 
 		# Share of read books
@@ -77,7 +134,19 @@ if isinstance(lib_df, pd.DataFrame) and not lib_df.empty:
 		if "author" in lib_df.columns:
 			st.markdown("**Top Authors (Read)**")
 			top_authors = lib_df.loc[read_mask, "author"].value_counts().head(10)
-			st.bar_chart(top_authors)
+			# Altair bar chart with axis titles
+			import altair as alt
+			top_authors_df = top_authors.reset_index()
+			top_authors_df.columns = ["author", "count"]
+			auth_chart = (
+				alt.Chart(top_authors_df)
+				.mark_bar(color="#9C27B0")
+				.encode(
+					x=alt.X("author:N", title="Author"),
+					y=alt.Y("count:Q", title="Read Count")
+				)
+			)
+			st.altair_chart(auth_chart, use_container_width=True)
 else:
 	st.info("No library books yet. Click Fetch above.")
 
@@ -105,7 +174,18 @@ if isinstance(gr_books_df, pd.DataFrame) and not gr_books_df.empty:
 			ratings = ratings.astype(float)
 			if not ratings.empty:
 				hist = ratings.value_counts().sort_index()
-				st.bar_chart(hist)
+				import altair as alt
+				ratings_df = hist.reset_index()
+				ratings_df.columns = ["rating", "count"]
+				ratings_chart = (
+					alt.Chart(ratings_df)
+					.mark_bar(color="#2E7D32")
+					.encode(
+						x=alt.X("rating:Q", title="Rating"),
+						y=alt.Y("count:Q", title="Count")
+					)
+				)
+				st.altair_chart(ratings_chart, use_container_width=True)
 		except Exception:
 			pass
 
@@ -226,7 +306,16 @@ if isinstance(workout_stats, dict) and workout_stats:
 		if "by_type" in workout_stats and isinstance(workout_stats["by_type"], dict):
 			st.markdown("**Workouts by Type**")
 			by_type_df = pd.DataFrame(list(workout_stats["by_type"].items()), columns=["type","count"])
-			st.bar_chart(by_type_df.set_index("type"))
+			import altair as alt
+			by_type_chart = (
+				alt.Chart(by_type_df)
+				.mark_bar(color="#546E7A")
+				.encode(
+					x=alt.X("type:N", title="Activity Type"),
+					y=alt.Y("count:Q", title="Workouts")
+				)
+			)
+			st.altair_chart(by_type_chart, use_container_width=True)
 		# By month
 		if "by_month" in workout_stats and isinstance(workout_stats["by_month"], dict):
 			st.markdown("**Workouts per Month (2025)**")
@@ -234,17 +323,34 @@ if isinstance(workout_stats, dict) and workout_stats:
 			# Ensure months numeric and ordered 1..12
 			by_month["month"] = pd.to_numeric(by_month["month"], errors="coerce")
 			by_month = by_month.dropna().sort_values("month")
-			st.bar_chart(by_month.set_index("month"))
-		# Totals like distance or time
-		if "total_distance_km" in workout_stats or "total_time_hours" in workout_stats:
-			st.markdown("**Totals**")
-			total_distance = float(workout_stats.get("total_distance_km", 0) or 0)
-			total_time = float(workout_stats.get("total_time_hours", 0) or 0)
-			col1, col2 = st.columns(2)
-			with col1:
-				st.metric("Total Distance (km)", f"{total_distance:.1f}")
-			with col2:
-				st.metric("Total Time (hours)", f"{total_time:.1f}")
+			import altair as alt
+			bym_chart = (
+				alt.Chart(by_month)
+				.mark_bar(color="#00897B")
+				.encode(
+					x=alt.X("month:O", title="Month"),
+					y=alt.Y("count:Q", title="Workouts")
+				)
+			)
+			st.altair_chart(bym_chart, use_container_width=True)
+		# Totals: workouts, distance, time
+		st.markdown("**Totals**")
+		# Align keys to strava_helpers.compute_workout_stats output
+		by_type_counts = workout_stats.get("by_type_counts", {}) if isinstance(workout_stats.get("by_type_counts", {}), dict) else {}
+		total_workouts = int(workout_stats.get("workout_count", 0) or 0)
+		# Fallback: sum by_type_counts if workout_count missing or zero
+		if total_workouts == 0 and by_type_counts:
+			total_workouts = int(sum((v or 0) for v in by_type_counts.values()))
+		avg_speed_mph = float(workout_stats.get("avg_speed_mph", 0) or 0)
+		# Use precomputed total time hours from helper
+		total_time_hours = float(workout_stats.get("total_time_hours", 0) or 0)
+		col1, col2, col3 = st.columns(3)
+		with col1:
+			st.metric("Total Workouts", f"{total_workouts}")
+		with col2:
+			st.metric("Total Distance (miles)", f"{total_distance:.1f}")
+		with col3:
+			st.metric("Total Time (hours)", f"{total_time_hours:.1f}")
 	except Exception:
 		pass
 else:
@@ -255,41 +361,32 @@ st.subheader("How active vs. how much I read (2025)")
 # Build a dual-axis monthly line chart: left=workouts, right=books
 try:
 	import altair as alt
-	# Workouts by month from stats (expects keys as 1..12 or month names)
-	wstats = st.session_state.get("workout_stats", {}) or {}
-	by_month_w = wstats.get("by_month", {}) if isinstance(wstats, dict) else {}
-	w_month_df = pd.DataFrame(list(by_month_w.items()), columns=["month","workouts"]) if by_month_w else pd.DataFrame(columns=["month","workouts"])
-	# Normalize month to numeric 1..12
-	def _month_to_num(m):
-		try:
-			return int(m)
-		except Exception:
-			try:
-				return pd.to_datetime(str(m), format="%b").month
-			except Exception:
-				return None
-	if not w_month_df.empty:
-		w_month_df["month"] = w_month_df["month"].map(_month_to_num)
-		w_month_df = w_month_df.dropna().astype({"month": int})
-
-	# Books by month from Goodreads
+	# Goodreads monthly counts
 	gr_books_df = st.session_state.get("gr_books_df", pd.DataFrame())
-	b_month_df = pd.DataFrame(columns=["month","books"])
+	books_month_counts = pd.DataFrame()
 	if isinstance(gr_books_df, pd.DataFrame) and not gr_books_df.empty and "Date Read" in gr_books_df.columns:
-		_dfb = gr_books_df.copy()
-		_dfb["_date"] = pd.to_datetime(_dfb["Date Read"], errors="coerce")
-		_dfb = _dfb.dropna(subset=["_date"]) 
-		_dfb = _dfb[_dfb["_date"].dt.year == 2025]
-		_dfb["month"] = _dfb["_date"].dt.month
-		b_month_df = _dfb.groupby("month", as_index=False).size().rename(columns={"size":"books"})
+		dfm = gr_books_df.copy()
+		dfm["_date"] = pd.to_datetime(dfm["Date Read"], errors="coerce")
+		dfm = dfm.dropna(subset=["_date"]) 
+		dfm = dfm[dfm["_date"].dt.year == 2025]
+		dfm["month"] = dfm["_date"].dt.month
+		books_month_counts = dfm.groupby("month", as_index=False).size().rename(columns={"size":"books"})
 
-	# Merge into common month series 1..12
-	months = pd.DataFrame({"month": list(range(1,13))})
-	merged = months.merge(w_month_df, on="month", how="left").merge(b_month_df, on="month", how="left")
-	merged["workouts"] = merged["workouts"].fillna(0)
-	merged["books"] = merged["books"].fillna(0)
+	# Workouts monthly counts from workout_stats.by_month
+	workout_stats = st.session_state.get("workout_stats", {})
+	workouts_month_counts = pd.DataFrame()
+	by_month = workout_stats.get("by_month", {}) if isinstance(workout_stats, dict) else {}
+	if isinstance(by_month, dict) and by_month:
+		workouts_month_counts = pd.DataFrame(list(by_month.items()), columns=["month","workouts"]).sort_values("month")
 
-	# Month label for axis
+	# Merge on month 1..12
+	month_domain = list(range(1,13))
+	base = pd.DataFrame({"month": month_domain})
+	merged = base.merge(books_month_counts, on="month", how="left").merge(workouts_month_counts, on="month", how="left")
+	merged["books"] = merged["books"].fillna(0).astype(int)
+	merged["workouts"] = merged["workouts"].fillna(0).astype(int)
+
+	# Label months
 	month_label_expr = (
 		"datum.value==1?'Jan':"
 		"datum.value==2?'Feb':"
@@ -304,14 +401,28 @@ try:
 		"datum.value==11?'Nov':'Dec'"
 	)
 
-	base = alt.Chart(merged).encode(x=alt.X("month:O", scale=alt.Scale(domain=list(range(1,13))), axis=alt.Axis(title="Month", labelExpr=month_label_expr)))
-	workouts_line = base.mark_line(color="#4C78A8", strokeWidth=2).encode(y=alt.Y("workouts:Q", axis=alt.Axis(title="Workouts", orient="left")))
-	books_line = base.mark_line(color="#F59E0B", strokeWidth=2).encode(y=alt.Y("books:Q", axis=alt.Axis(title="Books Read", orient="right")))
-	chart = alt.layer(workouts_line, books_line).resolve_scale(y="independent").properties(height=320)
-	st.altair_chart(chart, width='stretch')
-	st.caption("Left axis: workouts • Right axis: books read")
+	chart_data = merged
+	left = (
+		alt.Chart(chart_data)
+		.mark_line(color="#4C78A8", point=True)
+		.encode(
+			x=alt.X("month:O", scale=alt.Scale(domain=month_domain), axis=alt.Axis(labelExpr=month_label_expr), title="Month"),
+			y=alt.Y("workouts:Q", title="Workouts")
+		)
+	)
+	right = (
+		alt.Chart(chart_data)
+		.mark_line(color="#F59E0B", point=True)
+		.encode(
+			x=alt.X("month:O", scale=alt.Scale(domain=month_domain), axis=alt.Axis(labelExpr=month_label_expr), title="Month"),
+			y=alt.Y("books:Q", title="Books Read")
+		)
+	)
+	layered = alt.layer(left, right).resolve_scale(y="independent").properties(width=700, height=300)
+	st.altair_chart(layered, use_container_width=True)
 except Exception as e:
-	st.info(f"Multi-axis chart unavailable: {e}")
+	st.warning(f"Could not build dual-axis chart: {e}")
+
 
 st.divider()
 st.caption("Data is loaded in-memory via library_app.sfpl_2025 and shared through session state. No CSVs.")
