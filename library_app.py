@@ -292,7 +292,7 @@ async def sfpl_2025():
     """Main async execution flow."""
     # 1. Fetch Library Data
     async with async_playwright() as pw:
-        browser = await pw.chromium.launch(headless=False)
+        browser = await pw.chromium.launch()
         page = await browser.new_page()
         page.set_default_timeout(60000)
 
