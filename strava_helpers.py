@@ -1,118 +1,123 @@
 import pandas as pd
+from typing import Dict, Any, List
 
+# --- Constants ---
+
+CORE_COLUMNS = [
+    'Activity ID', 'Activity Date', 'Activity Name', 'Activity Type',
+    'Elapsed Time', 'Moving Time', 'Distance', 'Average Speed', 'Max Speed',
+    'Elevation Gain', 'Elevation Loss', 'Average Heart Rate', 'Max Heart Rate',
+    'Calories', 'Relative Effort', 'Filename'
+]
+
+NUMERIC_COLUMNS = [
+    'Elapsed Time', 'Moving Time', 'Distance', 'Average Speed', 'Max Speed',
+    'Elevation Gain', 'Elevation Loss', 'Average Heart Rate', 'Max Heart Rate',
+    'Calories', 'Relative Effort'
+]
+
+# Regex patterns for activity categorization
+ACTIVITY_PATTERNS = {
+    'Tennis': r"\btennis\b|\bhit\b|\bhitting\b|\bhit session\b",
+    'Basketball': r"\bbasketball\b|\bbball\b|\bpickup\b",
+    'Volleyball': r"\bvolleyball\b|\bvball\b",
+    'Pickleball': r"\bpickleball\b|\bpickle\b|\bpb\b"
+}
+
+KM_TO_MILES = 0.621371
+
+
+# --- Helper Functions ---
+
+def _convert_to_miles(series: pd.Series) -> float:
+    """Helper to safely convert a KM series to a scalar Miles float."""
+    if series.empty:
+        return 0.0
+    return float(pd.to_numeric(series, errors='coerce').mean() * KM_TO_MILES)
+
+
+# --- Main Logic ---
 
 def clean_workouts_df(df: pd.DataFrame) -> pd.DataFrame:
-    """Select relevant columns, parse types, and return a tidy workouts DataFrame.
-    """
-    if df is None or len(df) == 0:
+    """Select relevant columns, parse types, and return a tidy workouts DataFrame."""
+    if df is None or df.empty:
         return pd.DataFrame()
 
-    core_cols = [
-        'Activity ID', 'Activity Date', 'Activity Name', 'Activity Type',
-        'Elapsed Time', 'Moving Time', 'Distance', 'Average Speed', 'Max Speed',
-        'Elevation Gain', 'Elevation Loss', 'Average Heart Rate', 'Max Heart Rate',
-        'Calories', 'Relative Effort', 'Filename'
-    ]
-
-    keep = [c for c in core_cols if c in df.columns]
+    # 1. Filter Columns
+    keep = [c for c in CORE_COLUMNS if c in df.columns]
     tidy = df[keep].copy()
 
+    # 2. Parse Dates
     if 'Activity Date' in tidy.columns:
         tidy['Activity Date'] = pd.to_datetime(
             tidy['Activity Date'], format='%b %d, %Y, %I:%M:%S %p', errors='coerce'
         )
         tidy = tidy.dropna(subset=['Activity Date'])
 
-    for col in ['Elapsed Time', 'Moving Time', 'Distance', 'Average Speed', 'Max Speed',
-                'Elevation Gain', 'Elevation Loss', 'Average Heart Rate', 'Max Heart Rate',
-                'Calories', 'Relative Effort']:
+    # 3. Numeric Conversion
+    for col in NUMERIC_COLUMNS:
         if col in tidy.columns:
             tidy[col] = pd.to_numeric(tidy[col], errors='coerce')
 
-    # Re-categorize generic workouts based on Activity Name keywords
+    # 4. Re-categorize generic workouts
     if 'Activity Name' in tidy.columns:
-        name_lower = tidy['Activity Name'].astype(str).str.lower()
-        # Keyword aliases (word-boundary where meaningful)
-        tennis_pat = r"\btennis\b|\bhit\b|\bhitting\b|\bhit session\b"
-        basketball_pat = r"\bbasketball\b|\bbball\b|\bpickup\b"
-        volleyball_pat = r"\bvolleyball\b|\bvball\b"
-        pickleball_pat = r"\bpickleball\b|\bpickle\b|\bpb\b"
-
-        is_tennis = name_lower.str.contains(tennis_pat, na=False, regex=True)
-        is_basketball = name_lower.str.contains(basketball_pat, na=False, regex=True)
-        is_volleyball = name_lower.str.contains(volleyball_pat, na=False, regex=True)
-        is_pickleball = name_lower.str.contains(pickleball_pat, na=False, regex=True)
-        # Initialize Activity Type if missing
         if 'Activity Type' not in tidy.columns:
-            tidy['Activity Type'] = pd.Series(['Workout'] * len(tidy))
-        # Only override when original type is generic 'Workout' or missing
-        generic = tidy['Activity Type'].astype(str).str.lower().isin(['workout', 'other', '']) | tidy['Activity Type'].isna()
-        tidy.loc[generic & is_tennis, 'Activity Type'] = 'Tennis'
-        tidy.loc[generic & is_basketball, 'Activity Type'] = 'Basketball'
-        tidy.loc[generic & is_volleyball, 'Activity Type'] = 'Volleyball'
-        tidy.loc[generic & is_pickleball, 'Activity Type'] = 'Pickleball'
+            tidy['Activity Type'] = 'Workout'
+
+        name_lower = tidy['Activity Name'].astype(str).str.lower()
+        
+        # Identify generic types we want to override
+        is_generic = tidy['Activity Type'].astype(str).str.lower().isin(['workout', 'other', '']) | tidy['Activity Type'].isna()
+
+        for new_type, pattern in ACTIVITY_PATTERNS.items():
+            matches_pattern = name_lower.str.contains(pattern, na=False, regex=True)
+            tidy.loc[is_generic & matches_pattern, 'Activity Type'] = new_type
 
     return tidy
 
 
-def compute_workout_stats(df: pd.DataFrame) -> dict:
-    """Compute useful aggregates for a year of workouts.
+def compute_workout_stats(df: pd.DataFrame) -> Dict[str, Any]:
+    """Compute useful aggregates for a year of workouts."""
+    defaults = {
+        'workout_count': 0, 'total_time_hours': 0.0, 'by_type_counts': {},
+        'by_type_distance_miles': {}, 'avg_distance_miles': 0.0, 'avg_speed_mph': 0.0,
+        'max_speed_mph': 0.0, 'total_elev_gain_m': 0.0, 'avg_heart_rate': 0.0,
+        'max_heart_rate': 0.0, 'total_calories': 0.0
+    }
 
-    Returns a dict with totals and highlights to feed an LLM.
-    """
-    if df is None or len(df) == 0:
-        return {
-            'workout_count': 0,
-            'total_time_hours': 0.0,
-            'by_type_counts': {},
-            'by_type_distance_miles': {},
-            'avg_distance_miles': 0.0,
-            'avg_speed_mph': 0.0,
-            'max_speed_mph': 0.0,
-            'total_elev_gain_m': 0.0,
-            'avg_heart_rate': 0.0,
-            'max_heart_rate': 0.0,
-            'total_calories': 0.0
-        }
+    if df is None or df.empty:
+        return defaults
 
+    # Basic Counts
     workout_count = len(df)
     by_type_counts = df['Activity Type'].value_counts(dropna=False).to_dict() if 'Activity Type' in df.columns else {}
 
-    dist = df['Distance'] if 'Distance' in df.columns else pd.Series(dtype=float)
-    # Convert kilometers to miles
-    km_series = pd.to_numeric(dist, errors='coerce') if len(dist) else pd.Series(dtype=float)
-    avg_distance_miles = float(km_series.mean() * 0.621371) if len(km_series) else 0.0
+    # Distance & Speed Stats (KM -> Miles)
+    avg_distance_miles = _convert_to_miles(df.get('Distance', pd.Series(dtype=float)))
+    avg_speed_mph = _convert_to_miles(df.get('Average Speed', pd.Series(dtype=float)))
+    
+    # Max speed requires a slightly different safe handling than the helper provides (max vs mean)
+    max_speed_kmh = pd.to_numeric(df.get('Max Speed', pd.Series(dtype=float)), errors='coerce')
+    max_speed_mph = float(max_speed_kmh.max() * KM_TO_MILES) if not max_speed_kmh.empty else 0.0
 
-    # Convert km/h to mph
-    avg_speed_kmh_series = pd.to_numeric(df['Average Speed'], errors='coerce') if 'Average Speed' in df.columns else pd.Series(dtype=float)
-    max_speed_kmh_series = pd.to_numeric(df['Max Speed'], errors='coerce') if 'Max Speed' in df.columns else pd.Series(dtype=float)
-    avg_speed_mph = float(avg_speed_kmh_series.mean() * 0.621371) if len(avg_speed_kmh_series) else 0.0
-    max_speed_mph = float(max_speed_kmh_series.max() * 0.621371) if len(max_speed_kmh_series) else 0.0
+    # Physical Stats
+    total_elev_gain_m = float(df.get('Elevation Gain', pd.Series(dtype=float)).sum())
+    avg_heart_rate = float(df.get('Average Heart Rate', pd.Series(dtype=float)).mean())
+    max_heart_rate = float(df.get('Max Heart Rate', pd.Series(dtype=float)).max())
+    total_calories = float(df.get('Calories', pd.Series(dtype=float)).sum())
 
-    total_elev_gain_m = float(pd.to_numeric(df['Elevation Gain'], errors='coerce').sum()) if 'Elevation Gain' in df.columns else 0.0
+    # Time Calculation (Prefer Moving, fallback to Elapsed)
+    moving = df.get('Moving Time', pd.Series(dtype=float)).sum()
+    elapsed = df.get('Elapsed Time', pd.Series(dtype=float)).sum()
+    total_time_sec = moving if moving > 0 else elapsed
+    total_time_hours = total_time_sec / 3600.0
 
-    avg_heart_rate = float(pd.to_numeric(df['Average Heart Rate'], errors='coerce').mean()) if 'Average Heart Rate' in df.columns else 0.0
-    max_heart_rate = float(pd.to_numeric(df['Max Heart Rate'], errors='coerce').max()) if 'Max Heart Rate' in df.columns else 0.0
-
-    total_calories = float(pd.to_numeric(df['Calories'], errors='coerce').sum()) if 'Calories' in df.columns else 0.0
-
-    # Time: prefer Moving Time (seconds), fallback to Elapsed Time (seconds)
-    moving_time_seconds = float(pd.to_numeric(df['Moving Time'], errors='coerce').sum()) if 'Moving Time' in df.columns else 0.0
-    elapsed_time_seconds = float(pd.to_numeric(df['Elapsed Time'], errors='coerce').sum()) if 'Elapsed Time' in df.columns else 0.0
-    total_time_seconds = moving_time_seconds if moving_time_seconds > 0 else elapsed_time_seconds
-    total_time_hours = total_time_seconds / 3600.0 if total_time_seconds > 0 else 0.0
-
+    # Distance by Type
+    by_type_distance_miles = {}
     if 'Activity Type' in df.columns and 'Distance' in df.columns:
-        by_type_distance_miles = (
-            df[['Activity Type', 'Distance']]
-            .assign(Distance=pd.to_numeric(df['Distance'], errors='coerce') * 0.621371)
-            .groupby('Activity Type', dropna=False)['Distance']
-            .sum()
-            .round(2)
-            .to_dict()
-        )
-    else:
-        by_type_distance_miles = {}
+        temp_df = df[['Activity Type', 'Distance']].copy()
+        temp_df['Distance'] = pd.to_numeric(temp_df['Distance'], errors='coerce') * KM_TO_MILES
+        by_type_distance_miles = temp_df.groupby('Activity Type')['Distance'].sum().round(2).to_dict()
 
     return {
         'workout_count': int(workout_count),
@@ -122,55 +127,40 @@ def compute_workout_stats(df: pd.DataFrame) -> dict:
         'avg_speed_mph': round(avg_speed_mph, 2),
         'max_speed_mph': round(max_speed_mph, 2),
         'total_elev_gain_m': round(total_elev_gain_m, 0),
-        'avg_heart_rate': round(avg_heart_rate, 1),
-        'max_heart_rate': round(max_heart_rate, 0),
+        'avg_heart_rate': round(0.0 if pd.isna(avg_heart_rate) else avg_heart_rate, 1),
+        'max_heart_rate': round(0.0 if pd.isna(max_heart_rate) else max_heart_rate, 0),
         'total_calories': round(total_calories, 0),
         'total_time_hours': round(total_time_hours, 1),
     }
 
 
-def compute_activities_per_month_by_type(df: pd.DataFrame) -> dict:
-    """Return counts of activities per type for each month (1..12).
+def compute_activities_per_month_by_type(df: pd.DataFrame) -> Dict[str, Dict[int, int]]:
+    """Return counts of activities per type for each month (1..12)."""
+    if df is None or df.empty or 'Activity Date' not in df.columns:
+        return {}
 
-    Structure:
-    {
-      'Run': {1: 3, 2: 0, ..., 12: 4},
-      'Ride': {1: 1, 2: 2, ..., 12: 0},
-      ...
-    }
+    # Prepare data
+    df = df.copy()
+    df['month'] = pd.to_datetime(df['Activity Date'], errors='coerce').dt.month
+    
+    if 'Activity Type' not in df.columns:
+        df['Activity Type'] = 'Unknown'
+    else:
+        df['Activity Type'] = df['Activity Type'].fillna('Unknown').astype(str)
 
-    - Safely handles empty frames and missing columns
-    - Treats missing/unknown types as 'Unknown'
-    """
+    # Group by Type and Month
+    # Result: Series with MultiIndex (Activity Type, month) -> count
+    grouped = df.groupby(['Activity Type', 'month']).size()
+
+    # Format result structure
     result = {}
-    if df is None or len(df) == 0:
-        return result
-
-    # Ensure needed columns
-    if 'Activity Date' not in df.columns:
-        return result
-
-    # Ensure datetime typed
-    activity_dates = pd.to_datetime(df['Activity Date'], errors='coerce')
-    types = df['Activity Type'] if 'Activity Type' in df.columns else pd.Series(['Unknown'] * len(df))
-
-    # Initialize result for all observed types
-    observed_types = types.fillna('Unknown').astype(str).unique().tolist()
-    for t in observed_types:
-        result[t] = {m: 0 for m in range(1, 13)}
-
-    # Loop rows to count per month per type
-    for i in range(len(df)):
-        dt = activity_dates.iloc[i]
-        if pd.isna(dt):
-            continue
-        month = int(dt.month)
-        t = str(types.iloc[i]) if not pd.isna(types.iloc[i]) else 'Unknown'
-        # Initialize unseen type lazily
-        if t not in result:
-            result[t] = {m: 0 for m in range(1, 13)}
-        result[t][month] += 1
+    unique_types = df['Activity Type'].unique()
+    
+    for act_type in unique_types:
+        result[act_type] = {m: 0 for m in range(1, 13)}
+        # Fill in actual counts where they exist
+        if act_type in grouped:
+            for month, count in grouped[act_type].items():
+                result[act_type][int(month)] = int(count)
 
     return result
-
-
