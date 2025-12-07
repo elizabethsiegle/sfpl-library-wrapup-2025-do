@@ -7,7 +7,7 @@ import pandas as pd
 import requests
 
 from library_goodreads_helpers import clean_books_df, compute_book_stats
-from strava_helpers import clean_workouts_df, compute_workout_stats, compute_activities_per_month_by_type
+from strava_helpers import clean_workouts_df, compute_workout_stats
 
 # Load .env file
 load_dotenv()
@@ -43,6 +43,119 @@ def _normalize_title(s: str) -> str:
     return t
 
 async def sfpl_2025():
+    # --- Helpers to keep main flow tidy ---
+    def load_goodreads_csv() -> pd.DataFrame:
+        gr_path = os.path.expanduser('~/Desktop/demos/goodreads-and-strava-wrapup/data_csvs/goodreads_library_export.csv')
+        print('Reading Goodreads CSV from', gr_path)
+        return pd.read_csv(gr_path)
+
+    def filter_goodreads_2025(books_df: pd.DataFrame) -> pd.DataFrame:
+        cleaned = clean_books_df(books_df)
+        print('books_clean', cleaned)
+        if isinstance(cleaned, pd.DataFrame) and len(cleaned):
+            date_col = 'Date Read' if 'Date Read' in cleaned.columns else None
+            shelf_col = 'Exclusive Shelf' if 'Exclusive Shelf' in cleaned.columns else None
+            if date_col:
+                date_str = cleaned[date_col].astype(str)
+                mask_2025 = date_str.str.contains('2025', na=False)
+            else:
+                mask_2025 = pd.Series([False] * len(cleaned))
+            if shelf_col:
+                shelf_mask = cleaned[shelf_col].astype(str).str.lower().eq('read')
+            else:
+                shelf_mask = pd.Series([True] * len(cleaned))
+            return cleaned[mask_2025 & shelf_mask].copy()
+        return pd.DataFrame()
+
+    def merge_ratings_into_library(lib_df: pd.DataFrame, goodreads_books_this_year: pd.DataFrame) -> pd.DataFrame:
+        try:
+            print('Attempting Goodreads ratings merge…')
+            if not goodreads_books_this_year.empty and 'Title' in goodreads_books_this_year.columns:
+                gr = goodreads_books_this_year[['Title', 'My Rating']].copy()
+                gr['__key'] = gr['Title'].map(_normalize_title)
+                lib_df['__key'] = lib_df['title'].map(_normalize_title)
+                rating_map = gr.set_index('__key')['My Rating']
+                lib_df['rating'] = lib_df['__key'].map(rating_map)
+                # Fuzzy fallback
+                try:
+                    import difflib
+                    gr_keys = list(gr['__key'].dropna().unique())
+                    def _fuzzy_lookup(k: str):
+                        if not isinstance(k, str) or not k:
+                            return None
+                        match = difflib.get_close_matches(k, gr_keys, n=1, cutoff=0.9)
+                        return rating_map.get(match[0]) if match else None
+                    na_mask = lib_df['rating'].isna()
+                    if na_mask.any():
+                        lib_df.loc[na_mask, 'rating'] = lib_df.loc[na_mask, '__key'].map(_fuzzy_lookup)
+                except Exception:
+                    pass
+                lib_df['rating'] = lib_df['rating'].fillna('NR')
+                matched = (lib_df['rating'] != 'NR').sum()
+                print(f'Ratings matched: {matched}/{len(lib_df)}')
+                lib_df = lib_df.drop(columns=['__key'])
+            else:
+                print('Skipping ratings merge: no 2025 Goodreads titles available.')
+        except Exception as e:
+            print('Could not merge Goodreads ratings:', e)
+        return lib_df
+
+    def load_strava_csv() -> pd.DataFrame:
+        strava_path = os.path.expanduser('~/Desktop/demos/goodreads-and-strava-wrapup/data_csvs/activities.csv')
+        print('Reading Strava CSV from', strava_path)
+        return pd.read_csv(strava_path)
+
+    def workouts_2025(df: pd.DataFrame) -> pd.DataFrame:
+        tidy = clean_workouts_df(df)
+        print('strava_workouts_clean', tidy)
+        return tidy[tidy['Activity Date'].dt.year == 2025].copy()
+
+    def compute_workout_payload(workouts_df: pd.DataFrame) -> dict:
+        stats = compute_workout_stats(workouts_df)
+        # Per-type monthly counts for stacked charts
+        try:
+            if 'Activity Date' in workouts_df.columns:
+                w = workouts_df.copy()
+                w['month'] = w['Activity Date'].dt.month
+                type_col = 'Activity Type' if 'Activity Type' in w.columns else None
+                if type_col:
+                    grouped = (
+                        w.groupby(['month', type_col], as_index=False)
+                        .size()
+                        .rename(columns={'size': 'count'})
+                    )
+                    by_month_type = {}
+                    for _, row in grouped.iterrows():
+                        m = int(row['month']) if pd.notna(row['month']) else None
+                        t = str(row[type_col]) if pd.notna(row[type_col]) else 'Unknown'
+                        c = int(row['count']) if pd.notna(row['count']) else 0
+                        if m is None:
+                            continue
+                        by_month_type.setdefault(m, {})
+                        by_month_type[m][t] = by_month_type[m].get(t, 0) + c
+                    stats['by_month_by_type'] = by_month_type
+                    # Ensure by_month totals match the sum of per-type counts
+                    stats['by_month'] = {m: int(sum((v or 0) for v in type_counts.values())) for m, type_counts in by_month_type.items()}
+                else:
+                    stats['by_month_by_type'] = {}
+                    # Fallback to simple monthly counts
+                    by_month_series = w['month'].value_counts().sort_index()
+                    stats['by_month'] = {int(k): int(v) for k, v in by_month_series.to_dict().items()}
+            else:
+                stats['by_month_by_type'] = {}
+                try:
+                    by_month_series = workouts_df['Activity Date'].dt.month.value_counts().sort_index()
+                    stats['by_month'] = {int(k): int(v) for k, v in by_month_series.to_dict().items()}
+                except Exception:
+                    stats['by_month'] = {}
+        except Exception:
+            stats['by_month_by_type'] = {}
+            try:
+                by_month_series = workouts_df['Activity Date'].dt.month.value_counts().sort_index()
+                stats['by_month'] = {int(k): int(v) for k, v in by_month_series.to_dict().items()}
+            except Exception:
+                stats['by_month'] = {}
+        return stats
     async with async_playwright() as pw:
         browser = await pw.chromium.launch(headless=False)
         page = await browser.new_page()
@@ -226,58 +339,24 @@ async def sfpl_2025():
 
         response = requests.post(url, headers=headers, json=payload)
         
-        # Get Goodreads data from csv
-        # Note: we clean and then filter to just the 2025 'read' shelf
-        gr_path = os.path.expanduser('~/Desktop/demos/goodreads-and-strava-wrapup/data_csvs/goodreads_library_export.csv')
-        print('Reading Goodreads CSV from', gr_path)
-        goodreads_data = pd.read_csv(gr_path)
-        goodreads_books_clean = clean_books_df(goodreads_data)
-        print('books_clean', goodreads_books_clean)
-
-        # Get Strava data from csv
-        strava_path = os.path.expanduser('~/Desktop/demos/goodreads-and-strava-wrapup/data_csvs/activities.csv')
-        print('Reading Strava CSV from', strava_path)
-        strava_data = pd.read_csv(strava_path)
-        strava_workouts_clean = clean_workouts_df(strava_data)
-        print('strava_workouts_clean', strava_workouts_clean)
-        
-        
-        # Filter Goodreads to 2025 reads; be tolerant of missing columns
-        if isinstance(goodreads_books_clean, pd.DataFrame) and len(goodreads_books_clean):
-            date_col = 'Date Read' if 'Date Read' in goodreads_books_clean.columns else None
-            shelf_col = 'Exclusive Shelf' if 'Exclusive Shelf' in goodreads_books_clean.columns else None
-            if date_col:
-                date_str = goodreads_books_clean[date_col].astype(str)
-                mask_2025 = date_str.str.contains('2025', na=False)
-            else:
-                mask_2025 = pd.Series([False] * len(goodreads_books_clean))
-            if shelf_col:
-                shelf_mask = goodreads_books_clean[shelf_col].astype(str).str.lower().eq('read')
-            else:
-                shelf_mask = pd.Series([True] * len(goodreads_books_clean))
-            goodreads_books_this_year = goodreads_books_clean[mask_2025 & shelf_mask].copy()
-            print('goodreads_books_this_year', goodreads_books_this_year)
-        else:
-            goodreads_books_this_year = pd.DataFrame()
+        # Goodreads
+        goodreads_data = load_goodreads_csv()
+        goodreads_books_this_year = filter_goodreads_2025(goodreads_data)
         goodreads_book_stats = compute_book_stats(goodreads_books_this_year)
         print(f"Filtered to {len(goodreads_books_this_year)} books checked out in 2025.")
+
+        # Strava
+        strava_data = load_strava_csv()
+        workouts_this_year = workouts_2025(strava_data)
+        workout_stats = compute_workout_payload(workouts_this_year)
+        print('workout_stats', workout_stats)
+        
+        
+        # Log Goodreads details
         print('goodreads_books_this_year', goodreads_books_this_year)
         print('goodreads_book_stats ', goodreads_book_stats)
 
-        # Strava: tidy then filter to 2025 workouts for stats
-        tidy_strava = clean_workouts_df(strava_data)
-        workouts_this_year = (
-            tidy_strava[tidy_strava['Activity Date'].dt.year == 2025].copy()
-        )
         print('workouts_this_year', workouts_this_year)
-        workout_stats = compute_workout_stats(workouts_this_year)
-        # Add simple monthly breakdown for Streamlit dual-axis chart
-        try:
-            by_month_series = workouts_this_year['Activity Date'].dt.month.value_counts().sort_index()
-            workout_stats['by_month'] = {int(k): int(v) for k, v in by_month_series.to_dict().items()}
-        except Exception:
-            workout_stats['by_month'] = {}
-        print('workout_stats', workout_stats)
        
            
 
@@ -285,52 +364,8 @@ async def sfpl_2025():
         stats_json = json.dumps({**workout_stats})
         print('stats_json', stats_json)
 
-        # Merge Goodreads ratings into the library DataFrame by matching titles
-        try:
-            print('Attempting Goodreads ratings merge…')
-            if not goodreads_books_this_year.empty and 'Title' in goodreads_books_this_year.columns:
-                gr = goodreads_books_this_year[['Title', 'My Rating']].copy()
-                # Normalize titles and try exact key match first
-                gr['__key'] = gr['Title'].map(_normalize_title)
-                lib_df['__key'] = lib_df['title'].map(_normalize_title)
-                rating_map = gr.set_index('__key')['My Rating']
-                lib_df['rating'] = lib_df['__key'].map(rating_map)
-
-                # Quick fuzzy fallback for remaining NaNs (helps near-matches)
-                try:
-                    import difflib
-                    gr_keys = list(gr['__key'].dropna().unique())
-
-                    def _fuzzy_lookup(k: str):
-                        # Return closest Goodreads key if similarity is high
-                        if not isinstance(k, str) or not k:
-                            return None
-                        match = difflib.get_close_matches(k, gr_keys, n=1, cutoff=0.9)
-                        return rating_map.get(match[0]) if match else None
-
-                    na_mask = lib_df['rating'].isna()
-                    if na_mask.any():
-                        lib_df.loc[na_mask, 'rating'] = lib_df.loc[na_mask, '__key'].map(_fuzzy_lookup)
-                except Exception:
-                    pass
-                # If still NaN after all matching, mark as "NR" (No Rating)
-                lib_df['rating'] = lib_df['rating'].fillna('NR')
-                # report match quality
-                matched = (lib_df['rating'] != 'NR').sum()
-                total = len(lib_df)
-                print(f'Ratings matched: {matched}/{total}')
-                # show examples of unmatched for debugging
-                if matched < total:
-                    unmatched = lib_df[lib_df['rating'] == 'NR'][['title']].head(5)
-                    print('Unmatched sample (first 5):')
-                    print(unmatched)
-                lib_df = lib_df.drop(columns=['__key'])
-                print('New lib_df with ratings:')
-                print(lib_df)
-            else:
-                print('Skipping ratings merge: no 2025 Goodreads titles available.')
-        except Exception as e:
-            print('Could not merge Goodreads ratings:', e)
+        # Merge Goodreads ratings
+        lib_df = merge_ratings_into_library(lib_df, goodreads_books_this_year)
 
         try:
             data = response.json()

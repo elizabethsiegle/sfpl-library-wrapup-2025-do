@@ -316,23 +316,75 @@ if isinstance(workout_stats, dict) and workout_stats:
 				)
 			)
 			st.altair_chart(by_type_chart, use_container_width=True)
-		# By month
-		if "by_month" in workout_stats and isinstance(workout_stats["by_month"], dict):
-			st.markdown("**Workouts per Month (2025)**")
-			by_month = pd.DataFrame(list(workout_stats["by_month"].items()), columns=["month","count"])
-			# Ensure months numeric and ordered 1..12
-			by_month["month"] = pd.to_numeric(by_month["month"], errors="coerce")
-			by_month = by_month.dropna().sort_values("month")
-			import altair as alt
-			bym_chart = (
-				alt.Chart(by_month)
-				.mark_bar(color="#00897B")
-				.encode(
-					x=alt.X("month:O", title="Month"),
-					y=alt.Y("count:Q", title="Workouts")
+		
+        # By month
+		# Stacked monthly workouts by activity type
+		by_month_by_type = workout_stats.get("by_month_by_type", {})
+		if isinstance(by_month_by_type, dict) and by_month_by_type:
+			st.markdown("**Workouts per Month by Type (Stacked)**")
+			rows = []
+			for m, type_counts in by_month_by_type.items():
+				for t, c in (type_counts or {}).items():
+					rows.append({"month": int(m), "type": str(t), "count": int(c)})
+			stack_df = pd.DataFrame(rows)
+			if not stack_df.empty:
+				stack_df = stack_df.sort_values(["month","type"]) 
+				import altair as alt
+				month_domain = list(range(1,13))
+				month_label_expr = (
+					"datum.value==1?'Jan':"
+					"datum.value==2?'Feb':"
+					"datum.value==3?'Mar':"
+					"datum.value==4?'Apr':"
+					"datum.value==5?'May':"
+					"datum.value==6?'Jun':"
+					"datum.value==7?'Jul':"
+					"datum.value==8?'Aug':"
+					"datum.value==9?'Sep':"
+					"datum.value==10?'Oct':"
+					"datum.value==11?'Nov':'Dec'"
 				)
-			)
-			st.altair_chart(bym_chart, use_container_width=True)
+				# Preferred activity order and colors
+				preferred_order = ["Run", "Ride", "Swim", "Walk", "Hike", "Tennis", "Basketball", "Volleyball", "Pickleball", "Strength", "Yoga"]
+				preferred_colors = [
+					"#4C78A8",  # Run
+					"#F58518",  # Ride
+					"#54A24B",  # Swim
+					"#E45756",  # Walk
+					"#72B7B2",  # Hike
+					"#EECA3B",  # Tennis
+					"#B279A2",  # Basketball
+					"#FF9DA6",  # Volleyball
+					"#9C755F",  # Pickleball
+					"#76B7B2",  # Strength
+					"#59A14F"   # Yoga
+				]
+				stack_chart = (
+					alt.Chart(stack_df)
+					.mark_bar()
+					.encode(
+						x=alt.X("month:O", title="Month", scale=alt.Scale(domain=month_domain), axis=alt.Axis(labelExpr=month_label_expr)),
+						y=alt.Y("count:Q", title="Workouts"),
+						color=alt.Color("type:N", title="Activity Type", scale=alt.Scale(domain=preferred_order, range=preferred_colors), sort=preferred_order),
+						tooltip=[
+							alt.Tooltip("month:O", title="Month"),
+							alt.Tooltip("type:N", title="Type"),
+							alt.Tooltip("count:Q", title="Count")
+						]
+					)
+				)
+				# Overlay total labels per month on top of stacks
+				totals_df = stack_df.groupby('month', as_index=False)['count'].sum().rename(columns={'count':'total'})
+				labels = (
+					alt.Chart(totals_df)
+					.mark_text(align='center', baseline='bottom', dy=-4, color='#1F2937', font='Inter', fontSize=12)
+					.encode(
+						x=alt.X("month:O", title="Month", scale=alt.Scale(domain=month_domain), axis=alt.Axis(labelExpr=month_label_expr)),
+						y=alt.Y("total:Q", title="Workouts"),
+						text=alt.Text("total:Q")
+					)
+				)
+				st.altair_chart(stack_chart + labels, width='stretch')
 		# Totals: workouts, distance, time
 		st.markdown("**Totals**")
 		# Align keys to strava_helpers.compute_workout_stats output
@@ -348,9 +400,8 @@ if isinstance(workout_stats, dict) and workout_stats:
 		with col1:
 			st.metric("Total Workouts", f"{total_workouts}")
 		with col2:
-			st.metric("Total Distance (miles)", f"{total_distance:.1f}")
-		with col3:
 			st.metric("Total Time (hours)", f"{total_time_hours:.1f}")
+			
 	except Exception:
 		pass
 else:

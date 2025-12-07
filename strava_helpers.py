@@ -81,7 +81,6 @@ def compute_workout_stats(df: pd.DataFrame) -> dict:
     dist = df['Distance'] if 'Distance' in df.columns else pd.Series(dtype=float)
     # Convert kilometers to miles
     km_series = pd.to_numeric(dist, errors='coerce') if len(dist) else pd.Series(dtype=float)
-    longest_distance_miles = float(km_series.max() * 0.621371) if len(km_series) else 0.0
     avg_distance_miles = float(km_series.mean() * 0.621371) if len(km_series) else 0.0
 
     # Convert km/h to mph
@@ -117,8 +116,9 @@ def compute_workout_stats(df: pd.DataFrame) -> dict:
 
     return {
         'workout_count': int(workout_count),
+        'by_type_counts': by_type_counts,
+        'by_type_distance_miles': by_type_distance_miles,
         'avg_distance_miles': round(avg_distance_miles, 2),
-        'longest_distance_miles': round(longest_distance_miles, 2),
         'avg_speed_mph': round(avg_speed_mph, 2),
         'max_speed_mph': round(max_speed_mph, 2),
         'total_elev_gain_m': round(total_elev_gain_m, 0),
@@ -126,8 +126,6 @@ def compute_workout_stats(df: pd.DataFrame) -> dict:
         'max_heart_rate': round(max_heart_rate, 0),
         'total_calories': round(total_calories, 0),
         'total_time_hours': round(total_time_hours, 1),
-        'by_type_counts': by_type_counts,
-        'by_type_distance_miles': by_type_distance_miles,
     }
 
 
