@@ -5,10 +5,37 @@ and stored in `st.session_state`. No CSV files are read or written.
 """
 
 import streamlit as st
+from streamlit.components.v1 import html
 import pandas as pd
 import altair as alt
 from dotenv import load_dotenv
 from library_data import get_library_and_goodreads
+
+st.set_page_config(layout="wide")
+
+chatbot_script = """
+<script async
+    src="https://mx4pxr3bbyeipxbzogbv4lwy.agents.do-ai.run/static/chatbot/widget.js"
+    data-agent-id="d9cb29a1-d39b-11f0-b074-4e013e2ddde4"
+    data-chatbot-id="DZLTaCQFgzzu04bcVRFvU6BCDwzOLKEp"
+    data-name="lizzie-agent-strava-goodreads-library-wrapped2025 Chatbot"
+    data-primary-color="#031B4E"
+    data-secondary-color="#E5E8ED"
+    data-button-background-color="#0061EB"
+    data-starting-message="Hello! How can I help you today?"
+    data-logo="/static/chatbot/icons/default-agent.svg">
+</script>
+"""
+override = """
+<script>
+window.addEventListener("DOMContentLoaded", () => {
+  const realBody = window.parent.document.body;
+  window.document.body = realBody;
+});
+</script>
+"""
+
+st.markdown(override + chatbot_script, unsafe_allow_html=True)
 
 # --- CONSTANTS & CONFIG ---
 PAGE_TITLE = "SFPL 2025 Wrap-up"
@@ -355,6 +382,9 @@ def render_comparison_chart():
         st.warning(f"Could not build dual-axis chart: {e}")
 
 def render_footer():
+    st.divider()
+    st.caption("Data is loaded in-memory via library_app.sfpl_2025 and shared through session state. No CSVs.")
+    
     st.markdown("""
     <style>
         .footer {
@@ -366,12 +396,31 @@ def render_footer():
         .footer a { color: #ff6b6b; text-decoration: none; font-weight: 500; }
         .footer a:hover { color: #ff5252; text-decoration: underline; }
     </style>
+    
     <div class="footer">
         made with <3 in sf | <a href="-https://github.com/elizabethsiegle/sfpl-library-wrapup-2025-do" target="_blank">View on GitHub</a>
     </div>
     """, unsafe_allow_html=True)
+st.markdown("""
+<style>
+.chat-iframe {
+    position: fixed;
+    bottom: 20px;
+    right: 20px;
+    width: 380px;
+    height: 540px;
+    border: none;
+    z-index: 9999;
+}
+</style>
+""", unsafe_allow_html=True)
 
-# --- MAIN APP FLOW ---
+# wraparound to have gradient AI agent floating bottom-right like a real chat widget
+st.markdown(f"""
+<iframe src="https://library-html-chatbot-qvt87.ondigitalocean.app/" class="chat-iframe"></iframe>
+""", unsafe_allow_html=True)
+
+
 
 def main():
     render_header()
