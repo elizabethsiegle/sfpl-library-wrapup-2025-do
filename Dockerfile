@@ -1,5 +1,5 @@
-# 1. Base image with Python and all Playwright dependencies pre-installed
-FROM mcr.microsoft.com/playwright/python:v1.49.0-jammy
+# Change "jammy" to "noble" to get a newer Python version
+FROM mcr.microsoft.com/playwright/python:v1.49.0-noble
 
 # 2. Set the working directory
 WORKDIR /app
