@@ -18,7 +18,7 @@ USERNAME = os.getenv("USERNAME")
 PASSWORD = os.getenv("PASSWORD")
 MODEL_ACCESS_KEY = os.getenv("MODEL_ACCESS_KEY")
 
-# Hardcoded paths from original script
+# Hardcoded paths for CSV files from Goodreads and Strava
 GOODREADS_PATH = os.path.expanduser('~/Desktop/demos/goodreads-and-strava-wrapup/data_csvs/goodreads_library_export.csv')
 STRAVA_PATH = os.path.expanduser('~/Desktop/demos/goodreads-and-strava-wrapup/data_csvs/activities.csv')
 
@@ -34,7 +34,7 @@ LOGIN_PASS_XPATH = '/html/body/div[2]/div[2]/main/div/div[2]/div[1]/div/div[2]/d
 LOGIN_BTN_XPATH = '/html/body/div[2]/div[2]/main/div/div[2]/div[1]/div/div[2]/div[1]/form/p[2]/input'
 
 
-# --- TEXT & DATA HELPERS ---
+# text x data helpers
 
 def _normalize_title(s: str) -> str:
     """Normalize titles to improve matching between SFPL and Goodreads."""
@@ -85,7 +85,7 @@ def get_strava_data():
         
         stats = compute_workout_stats(workouts_2025)
         
-        # Calculate monthly stats (Logic preserved from original script)
+        # Calculate monthly stats
         by_month = {}
         by_month_by_type = {}
 
@@ -150,7 +150,7 @@ def merge_ratings(lib_df, gr_df):
     return lib_df
 
 
-# --- SCRAPING LOGIC ---
+# scraping logic
 
 async def scrape_sfpl_books(page):
     """Scrapes 2025 books from SFPL Recently Returned page."""
@@ -166,56 +166,8 @@ async def scrape_sfpl_books(page):
             
         items_locator = page.locator(BOOK_ITEM_SELECTOR)
         count = await items_locator.count()
-        
-        # --- PATH A: XPath Fallback (if count is 0) ---
-        if count == 0:
-            print("No items via CSS; attempting XPath enumeration.")
-            stop_loop = False
-            for idx in range(1, 51):
-                container_xpath = f"/html/body/div[1]/div/div/main/div/div/div[2]/div/div/div/div[3]/div/div[2]/div/div[2]/div[{idx}]"
-                loc = page.locator(f"xpath={container_xpath}")
-                
-                try:
-                    await loc.wait_for(state="visible", timeout=1000)
-                    full_text = await loc.inner_text()
-                    
-                    # Extract Data
-                    try:
-                        title_text = await page.locator(f"xpath={container_xpath}/label/span[2]/span").inner_text()
-                    except: title_text = "(unknown title)"
-                    
-                    try:
-                        author_text = await page.locator(f"xpath={container_xpath}//span[contains(@class,'author-link')]").inner_text()
-                    except: author_text = "(unknown author)"
 
-                    # Year Check
-                    lower_text = full_text.lower()
-                    year = None
-                    if "checked out on" in lower_text:
-                        snippet = full_text[lower_text.index("checked out on"):].split('\n')[0][:64]
-                        if "2025" in snippet: year = 2025
-                        elif "2024" in snippet: year = 2024
-                    
-                    if year == 2024:
-                        stop_loop = True; break
-                    if year == 2025:
-                        print(f"Found: {title_text}")
-                        library_books.append({"title": title_text, "author": author_text})
-                except Exception:
-                    continue # Skip index if load fails
-            
-            if stop_loop: break
-            
-            # Pagination for XPath mode
-            try:
-                await page.locator(f"xpath={NEXT_BUTTON_XPATH}").click()
-                await page.wait_for_load_state('networkidle')
-                page_index += 1
-                continue
-            except:
-                break
-
-        # --- PATH B: Standard CSS Selector ---
+        # Standard CSS Selector
         print(f"Found {count} items via CSS on page {page_index}.")
         stop_loop = False
         for i in range(count):
@@ -257,22 +209,23 @@ async def scrape_sfpl_books(page):
     return pd.DataFrame(library_books)[["title", "author"]] if library_books else pd.DataFrame(columns=["title", "author"])
 
 
-# --- LLM SERVICE ---
+# LLM call
 
-def generate_llm_wrapup(lib_df):
+def generate_llm_wrapup(lib_df, workout_stats):
     """Calls external LLM to generate summary."""
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {MODEL_ACCESS_KEY}"
     }
     messages = [
-        {"role": "system", "content": "You are an expert librarian advocate who loves books and economics. You must only output what is asked of you, do not return reasoning_content. Just have fun and advocate for libraries and tell people how much money they saved this year based on how many books they checked out from the library."},
+        {"role": "system", "content": "You are an expert librarian and workout advocate who loves books, exercise, and economics. You must only output what is asked of you, do not return reasoning_content. Just have fun and advocate for libraries, being outside, and tell people how much money they saved this year based on how many books they checked out from the library."},
         {"role": "user", "content": (
-            "Generate a brief year-end wrap-up paragraph for the user based on their reading. There's data from SF Public Library and Goodreads. "
+            "Generate a brief year-end wrap-up paragraph for the user based on their reading and Strava activities in the tone of Spotify wrapped. It should be funny and accurate. There's data from SF Public Library and Goodreads and Strava. "
             "Tell them how many books they checked out, some highlights, and estimate how much money they saved by going to the library. Estimate 1 book costs $23. "
             "Use the exact numeric stats provided (do not make up numbers, books, or authors). "
             "Write in a funny, friendly, engaging tone. Do not return any reasoning_content at all\n\n"
             f"Library books checked out this year: {lib_df}"
+            f"\n\nWorkouts this year: {workout_stats}."
         )}
     ]
     payload = {"model": LLM_MODEL, "messages": messages, "temperature": 0.2, "max_tokens": 500}
@@ -286,13 +239,13 @@ def generate_llm_wrapup(lib_df):
         return ""
 
 
-# --- MAIN ORCHESTRATOR ---
+# main orchestrator
 
 async def sfpl_2025():
     """Main async execution flow."""
     # 1. Fetch Library Data
     async with async_playwright() as pw:
-        browser = await pw.chromium.launch()
+        browser = await pw.chromium.launch(headless=True)
         page = await browser.new_page()
         page.set_default_timeout(60000)
 
@@ -315,7 +268,7 @@ async def sfpl_2025():
     stats_json = json.dumps(workout_stats)
     
     # 3. Generate Content
-    llm_content = generate_llm_wrapup(lib_df)
+    llm_content = generate_llm_wrapup(lib_df, workout_stats=workout_stats)
     
     # 4. Merge Data
     lib_df = merge_ratings(lib_df, gr_df)
