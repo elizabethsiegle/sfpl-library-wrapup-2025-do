@@ -7,6 +7,7 @@ WORKDIR /app
 # 3. Copy your requirements and install them
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
+RUN playwright install-deps                     ║
 
 # 4. Copy everything from your local folder (LIBRARY_WRAPUP) into the container
 COPY . .
