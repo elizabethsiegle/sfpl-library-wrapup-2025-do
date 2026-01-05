@@ -3,6 +3,8 @@
 ![example image](chartscreenshot.png)
 ![example image of app](chartscreenshot2.png)
 
+Watch the [full YouTube video here](https://www.youtube.com/watch?v=q6Vi40OkXkA)
+
 Add a .env with your SF Public Library username and password and DigitalOcean MODEL_ACCESS_KEY ([get one here](https://docs.digitalocean.com/products/gradient-ai-platform/how-to/use-serverless-inference/#keys))
 ```bash
 USERNAME=
